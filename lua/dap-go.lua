@@ -23,6 +23,13 @@ local default_config = {
     verbose = false,
   },
 }
+function table.copy(t)
+  local u = {}
+  for k, v in pairs(t) do
+    u[k] = v
+  end
+  return setmetatable(u, getmetatable(t))
+end
 
 local internal_global_config = {}
 
@@ -63,6 +70,16 @@ local function filtered_pick_process()
   return require("dap.utils").pick_process(opts)
 end
 
+local function rootful_delve_adapter(delve_config)
+  if delve_config.executable.command == "sudo" then
+    return
+  end
+
+  table.insert(delve_config.executable.args, 1, delve_config.executable.command)
+  delve_config.executable.command = "sudo"
+  table.insert(delve_config.executable.args, "--only-same-user=false")
+end
+
 local function setup_delve_adapter(dap, config)
   local args = { "dap", "-l", "127.0.0.1:" .. config.delve.port }
   vim.list_extend(args, config.delve.args)
@@ -71,7 +88,8 @@ local function setup_delve_adapter(dap, config)
     type = "server",
     port = config.delve.port,
     executable = {
-      command = config.delve.path,
+      -- resolve delve to fullpath since running with sudo might result in different paths
+      command = vim.fn.exepath(config.delve.path),
       args = args,
       detached = config.delve.detached,
       cwd = config.delve.cwd,
@@ -82,8 +100,13 @@ local function setup_delve_adapter(dap, config)
   }
 
   dap.adapters.go = function(callback, client_config)
+    local client_delve_config = vim.deepcopy(delve_config)
+    if client_config.asRoot then
+      rootful_delve_adapter(client_delve_config)
+    end
+
     if client_config.port == nil then
-      callback(delve_config)
+      callback(client_delve_config)
       return
     end
 
@@ -93,10 +116,13 @@ local function setup_delve_adapter(dap, config)
     end
 
     local listener_addr = host .. ":" .. client_config.port
-    delve_config.port = client_config.port
-    delve_config.executable.args = { "dap", "-l", listener_addr }
+    client_delve_config.port = client_config.port
+    client_delve_config.executable.args = { "dap", "-l", listener_addr }
+    if client_config.asRoot then
+      rootful_delve_adapter(client_delve_config)
+    end
 
-    callback(delve_config)
+    callback(client_delve_config)
   end
 end
 
